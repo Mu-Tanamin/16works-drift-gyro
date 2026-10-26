@@ -478,10 +478,10 @@ void setup() {
   mpu.initialize();
   if (mpu.testConnection()) {
     Serial.println(F("[OK] MPU6050 Connected."));
-    // 1) เปิด Hardware Digital Low Pass Filter (DLPF) 42Hz ลด Delay เหลือ ~4.8ms ให้ทันจังหวะสะบัดไว (Reverse Entry)
-    mpu.setDLPFMode(3); // 3 = MPU6050_DLPF_BW_42 (Gyro Cutoff 42Hz, Delay ~4.8ms)
-    // 2) ตั้งค่า Full Scale Gyro Range ±1000 deg/s (32.8 LSB/deg/s) ป้องกันสัญญาณตัน (Clipping) ตอนสะบัดท้ายแรง
-    mpu.setFullScaleGyroRange(2);
+    // 1) เปิด Hardware Digital Low Pass Filter (DLPF) 20Hz เพื่อตัดการสั่นสะเทือนจากมอเตอร์รอบจัดตอนกำคันเร่งเต็ม
+    mpu.setDLPFMode(4); // 4 = MPU6050_DLPF_BW_20 (Gyro Cutoff 20Hz - นิ่งสนิทตอนกดคันเร่งเต็ม)
+    // 2) ตั้งค่า Full Scale Gyro Range ±500 deg/s (65.5 LSB/deg/s) สมดุลความละเอียดสูง + รองรับ Reverse Entry
+    mpu.setFullScaleGyroRange(1);
   } else {
     Serial.println(F("[WARN] MPU6050 connection error. Check wiring SDA=6, SCL=7"));
   }
@@ -525,8 +525,8 @@ void runDriftMode() {
     digitalWrite(PIN_LED, HIGH);
   }
 
-  // 1. อ่านค่า Gyro Z + Offset (Full Scale ±1000 deg/s -> 32.8 LSB/deg/s)
-  float raw_gyro_z = ((float)mpu.getRotationZ() - gyro_z_offset) / 32.8f; // deg/s
+  // 1. อ่านค่า Gyro Z + Offset (Full Scale ±500 deg/s -> 65.5 LSB/deg/s)
+  float raw_gyro_z = ((float)mpu.getRotationZ() - gyro_z_offset) / 65.5f; // deg/s
 
   // 2. Deadband Filter (ตัด Noise ตอนอยู่นิ่ง)
   if (fabs(raw_gyro_z) < cfg.deadband) {
@@ -535,7 +535,7 @@ void runDriftMode() {
 
   // 3. Low-Pass Filter (Damper)
   filtered_gyro_z = (raw_gyro_z * cfg.damper) + (filtered_gyro_z * (1.0f - cfg.damper));
-  if (fabs(filtered_gyro_z) < 0.12f) {
+  if (fabs(filtered_gyro_z) < 0.15f) {
     filtered_gyro_z = 0.0f; // ตัดเศษทศนิยมที่ค้างอยู่นิ่งๆ ให้เป็น 0.0 สนิท
   }
 
@@ -543,8 +543,8 @@ void runDriftMode() {
   // กรอง D-Term แยกต่างหาก และตัดแรงสั่นสะเทือนระดับ Micro-ripple ตอนกดคันเร่งเต็ม
   float raw_gyro_d = (filtered_gyro_z - prev_gyro_z);
   prev_gyro_z = filtered_gyro_z;
-  filtered_gyro_d = (raw_gyro_d * 0.15f) + (filtered_gyro_d * 0.85f);
-  if (fabs(filtered_gyro_d) < 0.25f) {
+  filtered_gyro_d = (raw_gyro_d * 0.12f) + (filtered_gyro_d * 0.88f);
+  if (fabs(filtered_gyro_d) < 0.45f) {
     filtered_gyro_d = 0.0f; // ตัดการสั่นสะเทือนความถี่สูงจากมอเตอร์ตอนกดคันเร่งเต็ม
   }
 
@@ -569,15 +569,15 @@ void runDriftMode() {
   float driver_ratio = (float)abs(steering_input) / 500.0f;
   float active_gain = gain * (1.0f - (driver_ratio * cfg.steering_priority));
 
-  // 7. Dynamic Progressive Expo บนค่า Gyro (รองรับเพดาน ±1000 deg/s สำหรับ Reverse Entry)
+  // 7. Dynamic Progressive Expo บนค่า Gyro (รองรับเพดาน ±500 deg/s สำหรับ Reverse Entry)
   float gyro_sign = (filtered_gyro_z >= 0) ? 1.0f : -1.0f;
   float gyro_abs = fabs(filtered_gyro_z);
-  float gyro_norm = gyro_abs / 500.0f;
-  if (gyro_norm > 2.0f) gyro_norm = 2.0f; // รองรับเพดานสูงสุด 1000 deg/s โดยไม่เกิดอาการสัญญาณตัน
+  float gyro_norm = gyro_abs / 350.0f;
+  if (gyro_norm > 1.5f) gyro_norm = 1.5f;
   // ใช้ Quadratic Progressive Blend รักษาความนุ่มกลางโค้ง และอัดแรงดึงเพิ่มทวีคูณเมื่อสะบัดมุมลึก
   float expo_factor = cfg.s_curve * 0.45f;
-  float curved_gyro = (1.0f - expo_factor) * gyro_norm + expo_factor * (gyro_norm * min(gyro_norm, 1.5f));
-  float shaped_gyro_z = gyro_sign * (curved_gyro * 500.0f);
+  float curved_gyro = (1.0f - expo_factor) * gyro_norm + expo_factor * (gyro_norm * min(gyro_norm, 1.3f));
+  float shaped_gyro_z = gyro_sign * (curved_gyro * 350.0f);
 
   // 8. Control Math: Pure Normal Rate Mode (P + D)
   float correction = (shaped_gyro_z * cfg.p_gain + filtered_gyro_d * cfg.d_gain * 10.0f) * active_gain;
