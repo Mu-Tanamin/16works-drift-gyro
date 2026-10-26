@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>16WORKs Drift Gyro · Web Bluetooth</title>
+<style>
+  :root {
+    --bg-base: #0f1115;
+    --bg-card: #16181f;
+    --bg-track: #0b0c0f;
+    --bg-input: #1c202a;
+    --border-card: #272b36;
+    --border-subtle: #1e222c;
+    --text-main: #f0f3f6;
+    --text-dim: #768192;
+    --amber: #f59e0b;
+    --blue: #38bdf8;
+    --green: #10b981;
+    --red: #f43f5e;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    background: var(--bg-base);
+    color: var(--text-main);
+    margin: 0;
+    padding: 14px 12px 30px;
+    font-size: 13px;
+  }
+  .app-wrap { max-width: 520px; margin: 0 auto; }
+
+  /* HEADER */
+  .header-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border-card);
+    padding-bottom: 12px;
+    margin-bottom: 14px;
+  }
+  .header-title {
+    font-size: 1.15rem;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    color: #ffffff;
+    margin: 0;
+    text-transform: uppercase;
+  }
+  .header-title span { color: var(--amber); }
+  .header-sub {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    letter-spacing: 1px;
+    margin-top: 2px;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    text-transform: uppercase;
+  }
+  .btn-ble {
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 6px 12px;
+    border-radius: 3px;
+    background: rgba(56, 189, 248, 0.14);
+    color: var(--blue);
+    border: 1px solid rgba(56, 189, 248, 0.4);
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    width: auto;
+  }
+  .btn-ble.connected {
+    background: rgba(16, 185, 129, 0.14);
+    color: var(--green);
+    border-color: rgba(16, 185, 129, 0.4);
+  }
+
+  /* CARDS */
+  .panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border-card);
+    border-radius: 4px;
+    margin-bottom: 10px;
+    padding: 12px 14px;
+  }
+  .panel-tag {
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border-subtle);
+    padding-bottom: 6px;
+    margin-bottom: 10px;
+  }
+
+  /* TELEMETRY */
+  .telem-box { margin-bottom: 10px; }
+  .telem-head {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.76rem;
+    font-weight: 600;
+    margin-bottom: 3px;
+  }
+  .telem-val {
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    color: var(--blue);
+    font-weight: 700;
+  }
+  .meter-shell {
+    background: var(--bg-track);
+    border: 1px solid #1f232d;
+    height: 12px;
+    position: relative;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .meter-bar {
+    height: 100%;
+    background: linear-gradient(90deg, #0284c7, var(--blue));
+    width: 50%;
+    transition: width 0.04s linear;
+  }
+  .meter-mid {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: #475569;
+    z-index: 2;
+  }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .metric-tile {
+    background: #111318;
+    border: 1px solid #1f232d;
+    border-radius: 3px;
+    padding: 6px 10px;
+  }
+  .metric-lbl {
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    letter-spacing: 0.5px;
+  }
+  .metric-num {
+    font-size: 1.05rem;
+    font-weight: 800;
+    color: #ffffff;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    margin-top: 1px;
+  }
+
+  /* CONTROLS */
+  .param-row { margin-bottom: 10px; }
+  .param-header {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.77rem;
+    font-weight: 600;
+    margin-bottom: 3px;
+  }
+  .param-val {
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    color: var(--amber);
+    font-weight: 700;
+  }
+  input[type=range] {
+    width: 100%;
+    -webkit-appearance: none;
+    appearance: none;
+    background: #252b37;
+    height: 3px;
+    border-radius: 2px;
+    outline: none;
+    margin: 6px 0;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: var(--amber);
+    cursor: pointer;
+    border: 2px solid var(--bg-base);
+  }
+  select {
+    width: 100%;
+    background: var(--bg-input);
+    color: var(--text-main);
+    border: 1px solid var(--border-card);
+    padding: 6px 8px;
+    border-radius: 3px;
+    font-size: 0.78rem;
+    outline: none;
+  }
+
+  /* ACTIONS */
+  .btn-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  button {
+    font-family: inherit;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    padding: 10px;
+    border-radius: 3px;
+    border: none;
+    cursor: pointer;
+    transition: 0.1s;
+  }
+  .btn-save {
+    background: var(--amber);
+    color: #0b0c0f;
+  }
+  .btn-save:active { opacity: 0.85; }
+  .btn-cal {
+    background: #1e222b;
+    color: var(--text-main);
+    border: 1px solid var(--border-card);
+  }
+  .btn-cal:active { background: #262c38; }
+
+  .toast-banner {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #1e222a;
+    color: #ffffff;
+    border: 1px solid var(--amber);
+    padding: 6px 16px;
+    border-radius: 3px;
+    font-size: 0.76rem;
+    font-weight: 700;
+    display: none;
+    z-index: 100;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    letter-spacing: 0.5px;
+  }
+</style>
+</head>
+<body>
+<div class="app-wrap">
+
+  <!-- HEADER -->
+  <div class="header-bar">
+    <div>
+      <div class="header-title">16WORKs <span>Drift Gyro</span></div>
+      <div class="header-sub">ESP32-C3 BLE 5.0 · AFRC D2114TG-S 333Hz</div>
+    </div>
+    <button id="btn_ble" class="btn-ble" onclick="toggleBLE()">CONNECT BLE</button>
+  </div>
+
+  <!-- LIVE MONITOR -->
+  <div class="panel">
+    <div class="panel-tag">Live Telemetry</div>
+    
+    <div class="telem-box">
+      <div class="telem-head">
+        <span>Steering Input (CH1)</span>
+        <span class="telem-val" id="val_ch1">1500 µs</span>
+      </div>
+      <div class="meter-shell">
+        <div class="meter-mid"></div>
+        <div id="bar_ch1" class="meter-bar"></div>
+      </div>
+    </div>
+
+    <div class="telem-box">
+      <div class="telem-head">
+        <span>Servo Command</span>
+        <span class="telem-val" id="val_servo">1500 µs</span>
+      </div>
+      <div class="meter-shell">
+        <div class="meter-mid"></div>
+        <div id="bar_servo" class="meter-bar"></div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="metric-tile">
+        <div class="metric-lbl">CH3 Remote Gain</div>
+        <div class="metric-num" id="val_gain">0 %</div>
+      </div>
+      <div class="metric-tile">
+        <div class="metric-lbl">Yaw Velocity (Z)</div>
+        <div class="metric-num" id="val_gyro">0.0 °/s</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CHASSIS DYNAMICS -->
+  <div class="panel">
+    <div class="panel-tag">Chassis Dynamics</div>
+
+    <div class="param-row">
+      <div class="param-header">
+        <span>P-Gain (Rate Authority)</span>
+        <span class="param-val" id="lbl_p_gain">3.2</span>
+      </div>
+      <input type="range" id="cfg_p_gain" min="0.5" max="8.0" step="0.1" value="3.2" oninput="updLbl('p_gain')">
+    </div>
+
+    <div class="param-row">
+      <div class="param-header">
+        <span>D-Gain (Predictive Acceleration)</span>
+        <span class="param-val" id="lbl_d_gain">0.15</span>
+      </div>
+      <input type="range" id="cfg_d_gain" min="0.0" max="1.0" step="0.01" value="0.15" oninput="updLbl('d_gain')">
+    </div>
+
+    <div class="param-row">
+      <div class="param-header">
+        <span>S-Curve Exponential</span>
+        <span class="param-val" id="lbl_s_curve">40 %</span>
+      </div>
+      <input type="range" id="cfg_s_curve" min="0" max="100" step="1" value="40" oninput="updLblPct('s_curve')">
+    </div>
+
+    <div class="param-row">
+      <div class="param-header">
+        <span>Steering Priority (Transition Cutoff)</span>
+        <span class="param-val" id="lbl_st_prio">50 %</span>
+      </div>
+      <input type="range" id="cfg_st_prio" min="0" max="100" step="1" value="50" oninput="updLblPct('st_prio')">
+    </div>
+  </div>
+
+  <!-- ACTUATION & LIMITS -->
+  <div class="panel">
+    <div class="panel-tag">Actuation & Travel Limits</div>
+
+    <div class="param-row" style="background:#11141b; padding:8px 10px; border-radius:3px; border:1px solid #242936; margin-bottom:12px;">
+      <div class="param-header">
+        <span style="color:#ffffff; font-weight:700;">Servo Sub-Trim (Direct Steering)</span>
+        <span class="param-val" id="lbl_servo_trim">0 µs</span>
+      </div>
+      <input type="range" id="cfg_servo_trim" min="-150" max="150" step="1" value="0" oninput="liveTrim()">
+      <div style="font-size:0.65rem; color:var(--text-dim); margin-top:2px;">
+        Adjust live until front wheels point dead-straight (0 toe) without trimming transmitter.
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="param-row">
+        <div class="param-header">
+          <span>Snap Speed</span>
+          <span class="param-val" id="lbl_snap_spd">2800</span>
+        </div>
+        <input type="range" id="cfg_snap_spd" min="800" max="6000" step="50" value="2800" oninput="updLbl('snap_spd')">
+      </div>
+      <div class="param-row">
+        <div class="param-header">
+          <span>Return Speed</span>
+          <span class="param-val" id="lbl_ret_spd">1600</span>
+        </div>
+        <input type="range" id="cfg_ret_spd" min="600" max="3000" step="50" value="1600" oninput="updLbl('ret_spd')">
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="param-row">
+        <div class="param-header">
+          <span>EPA Left</span>
+          <span class="param-val" id="lbl_lim_l">1100 µs</span>
+        </div>
+        <input type="range" id="cfg_lim_l" min="850" max="1450" step="5" value="1100" oninput="updLblUs('lim_l')">
+      </div>
+      <div class="param-row">
+        <div class="param-header">
+          <span>EPA Right</span>
+          <span class="param-val" id="lbl_lim_r">1900 µs</span>
+        </div>
+        <input type="range" id="cfg_lim_r" min="1550" max="2150" step="5" value="1900" oninput="updLblUs('lim_r')">
+      </div>
+    </div>
+  </div>
+
+  <!-- SENSING & HARDWARE -->
+  <div class="panel">
+    <div class="panel-tag">Sensor Filter & Hardware</div>
+
+    <div class="grid-2">
+      <div class="param-row">
+        <div class="param-header">
+          <span>Damper</span>
+          <span class="param-val" id="lbl_damper">0.35</span>
+        </div>
+        <input type="range" id="cfg_damper" min="0.10" max="0.90" step="0.05" value="0.35" oninput="updLbl('damper')">
+      </div>
+      <div class="param-row">
+        <div class="param-header">
+          <span>Deadband</span>
+          <span class="param-val" id="lbl_deadband">0.5</span>
+        </div>
+        <input type="range" id="cfg_deadband" min="0.0" max="3.0" step="0.1" value="0.5" oninput="updLbl('deadband')">
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div>
+        <div style="font-size:0.75rem; font-weight:600; margin-bottom:4px; color:var(--text-dim)">DIRECTION</div>
+        <select id="cfg_reversed">
+          <option value="0">Normal</option>
+          <option value="1">Reversed</option>
+        </select>
+      </div>
+      <div>
+        <div style="font-size:0.75rem; font-weight:600; margin-bottom:4px; color:var(--text-dim)">FREQUENCY</div>
+        <select id="cfg_freq">
+          <option value="333">333 Hz (AFRC D2114TG-S)</option>
+          <option value="50">50 Hz (Standard)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="btn-grid">
+      <button class="btn-save" onclick="saveConfig()">SAVE CONFIG</button>
+      <button class="btn-cal" onclick="calibrate()">ZERO GYRO</button>
+    </div>
+  </div>
+
+</div>
+<div id="toast" class="toast-banner">SAVED</div>
+
+<script>
+const SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
+const CHAR_STATUS_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
+const CHAR_CONFIG_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a9';
+
+let bleDevice = null;
+let charStatus = null;
+let charConfig = null;
+let trimTimer = null;
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+
+function updLbl(k) { document.getElementById('lbl_'+k).innerText = document.getElementById('cfg_'+k).value; }
+function updLblPct(k) { document.getElementById('lbl_'+k).innerText = document.getElementById('cfg_'+k).value + ' %'; }
+function updLblUs(k) { document.getElementById('lbl_'+k).innerText = document.getElementById('cfg_'+k).value + ' µs'; }
+
+function showToast(msg) {
+  let t = document.getElementById('toast');
+  t.innerText = msg; t.style.display = 'block';
+  setTimeout(() => t.style.display = 'none', 2000);
+}
+
+async function toggleBLE() {
+  if (!navigator.bluetooth) {
+    alert('Web Bluetooth is not supported in this browser.\nUse Chrome on Android/Desktop, or Bluefy on iPhone.');
+    return;
+  }
+  if (bleDevice && bleDevice.gatt.connected) {
+    bleDevice.gatt.disconnect();
+    return;
+  }
+  try {
+    showToast('SEARCHING BLE...');
+    bleDevice = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: '16WORKs' }, { services: [SERVICE_UUID] }],
+      optionalServices: [SERVICE_UUID]
+    });
+    bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+    const server = await bleDevice.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE_UUID);
+    charStatus = await service.getCharacteristic(CHAR_STATUS_UUID);
+    charConfig = await service.getCharacteristic(CHAR_CONFIG_UUID);
+
+    await charStatus.startNotifications();
+    charStatus.addEventListener('characteristicvaluechanged', onStatusNotify);
+
+    const cfgVal = await charConfig.readValue();
+    applyConfigJSON(dec.decode(cfgVal));
+
+    let btn = document.getElementById('btn_ble');
+    btn.innerText = 'BLE CONNECTED';
+    btn.classList.add('connected');
+    showToast('BLE CONNECTED');
+  } catch (e) {
+    showToast('BLE CANCELLED / ERROR');
+  }
+}
+
+function onDisconnected() {
+  let btn = document.getElementById('btn_ble');
+  btn.innerText = 'CONNECT BLE';
+  btn.classList.remove('connected');
+  showToast('BLE DISCONNECTED');
+}
+
+function onStatusNotify(event) {
+  try {
+    const d = JSON.parse(dec.decode(event.target.value));
+    document.getElementById('val_ch1').innerText = d.ch1 + ' µs';
+    document.getElementById('val_servo').innerText = d.servo + ' µs';
+    document.getElementById('val_gyro').innerText = d.gyro.toFixed(1) + ' °/s';
+    document.getElementById('val_gain').innerText = Math.round(d.gain * 100) + ' %';
+
+    let pctCh1 = ((d.ch1 - 1000) / 1000) * 100;
+    let pctServo = ((d.servo - 1000) / 1000) * 100;
+    document.getElementById('bar_ch1').style.width = Math.max(0, Math.min(100, pctCh1)) + '%';
+    document.getElementById('bar_servo').style.width = Math.max(0, Math.min(100, pctServo)) + '%';
+  } catch (e) {}
+}
+
+function applyConfigJSON(str) {
+  try {
+    const d = JSON.parse(str);
+    document.getElementById('cfg_p_gain').value = d.p_gain; updLbl('p_gain');
+    document.getElementById('cfg_d_gain').value = d.d_gain; updLbl('d_gain');
+    document.getElementById('cfg_s_curve').value = Math.round(d.s_curve * 100); updLblPct('s_curve');
+    document.getElementById('cfg_st_prio').value = Math.round(d.st_prio * 100); updLblPct('st_prio');
+    document.getElementById('cfg_snap_spd').value = d.snap_spd; updLbl('snap_spd');
+    document.getElementById('cfg_ret_spd').value = d.ret_spd; updLbl('ret_spd');
+    document.getElementById('cfg_damper').value = d.damper; updLbl('damper');
+    document.getElementById('cfg_deadband').value = d.deadband; updLbl('deadband');
+    document.getElementById('cfg_lim_l').value = d.lim_l; document.getElementById('lbl_lim_l').innerText = d.lim_l + ' µs';
+    document.getElementById('cfg_lim_r').value = d.lim_r; document.getElementById('lbl_lim_r').innerText = d.lim_r + ' µs';
+    document.getElementById('cfg_reversed').value = d.reversed ? "1" : "0";
+    document.getElementById('cfg_freq').value = d.freq;
+
+    let tr = d.servo_trim || 0;
+    document.getElementById('cfg_servo_trim').value = tr;
+    document.getElementById('lbl_servo_trim').innerText = (tr > 0 ? '+' : '') + tr + ' µs';
+  } catch (e) {}
+}
+
+async function sendBLE(obj) {
+  if (!charConfig) {
+    showToast('CONNECT BLE FIRST');
+    return false;
+  }
+  try {
+    await charConfig.writeValue(enc.encode(JSON.stringify(obj)));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function liveTrim() {
+  let v = parseInt(document.getElementById('cfg_servo_trim').value);
+  document.getElementById('lbl_servo_trim').innerText = (v > 0 ? '+' : '') + v + ' µs';
+  clearTimeout(trimTimer);
+  trimTimer = setTimeout(() => { sendBLE({ cmd: 'trim', val: v }); }, 60);
+}
+
+async function saveConfig() {
+  let body = {
+    p_gain: parseFloat(document.getElementById('cfg_p_gain').value),
+    d_gain: parseFloat(document.getElementById('cfg_d_gain').value),
+    s_curve: parseFloat(document.getElementById('cfg_s_curve').value) / 100.0,
+    st_prio: parseFloat(document.getElementById('cfg_st_prio').value) / 100.0,
+    snap_spd: parseFloat(document.getElementById('cfg_snap_spd').value),
+    ret_spd: parseFloat(document.getElementById('cfg_ret_spd').value),
+    damper: parseFloat(document.getElementById('cfg_damper').value),
+    deadband: parseFloat(document.getElementById('cfg_deadband').value),
+    lim_l: parseInt(document.getElementById('cfg_lim_l').value),
+    lim_r: parseInt(document.getElementById('cfg_lim_r').value),
+    reversed: document.getElementById('cfg_reversed').value === "1",
+    freq: parseInt(document.getElementById('cfg_freq').value),
+    servo_trim: parseInt(document.getElementById('cfg_servo_trim').value)
+  };
+  if (await sendBLE(body)) showToast('CONFIG SAVED');
+}
+
+async function calibrate() {
+  if (await sendBLE({ cmd: 'cal' })) showToast('CALIBRATING SENSOR...');
+}
+</script>
+</body>
+</html>
