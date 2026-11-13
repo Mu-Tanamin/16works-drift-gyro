@@ -1,19 +1,19 @@
 /*
  * =====================================================================================
- *  PRO RC DRIFT GYROSCOPE CONTROLLER (V3.2 - PURE NORMAL RATE MODE)
+ *  PRO RC DRIFT GYROSCOPE CONTROLLER (V3.3 - PURE NORMAL RATE MODE)
  *  Target Board : ESP32-C3 Super Mini
  *  Sensor       : MPU6050 (I2C: SDA=GPIO6, SCL=GPIO7)
  * =====================================================================================
  *  ฟีเจอร์เด่น (Pure Normal Rate Mode P+D):
  *   1. Pure Normal Rate Mode: ควบคุมแบบธรรมชาติ พวงมาลัยคืนตัวตามสไตล์รถดริฟท์จริง
  *   2. CH3 Gain Control: ปรับระดับความไว (Gain) 0% - 100% จากรีโมทโดยตรง (1000 - 2000 µs)
- *   3. Asymmetric Slew Rate:
- *      - Fast Snap Speed: ล้อเด้งสวนแก้อาการทันที ป้องกันรถสปินหลุดไลน์
+ *   3. Asymmetric Slew Rate (Gyro Correction Only):
+ *      - Fast Snap Speed: ล้อเด้งสวนแก้อาการทันที ป้องกันรถสปินหลุดไลน์ (ไม่หน่วงมือคนขับ)
  *      - Smooth Return Speed: คืนพวงมาลัยนุ่มนวล ป้องกันอาการท้ายดีดกลับ (Tank-slapper)
  *   4. Dynamic S-Curve Expo: ตรงกลางนุ่มนวล แต่ดึงแน่นทวีคูณตอนสะบัดแรง
- *   5. Predictive D-Term: คาดเดาอาการลื่นไถลจากความเร่งการหมุน ล้อหน้าแก้ทันที
+ *   5. Predictive D-Term (dt-scaled): คาดเดาความเร่งการหมุนจริง (deg/s^2) ล้อหน้าแก้ทันที
  *   6. Steering Priority: ลดทอนไจโรตอนคนขับเลี้ยวสุด ช่วยให้สลับไลน์ (Flick/Transition) ได้คล่องตัว
- *   7. BLE 5.0 Web Bluetooth Tuner: เชื่อมต่อผ่านมือถือประหยัดพลังงานสูง ไม่ต้องสลับ Wi-Fi
+ *   7. BLE 5.0 Web Bluetooth Tuner: เชื่อมต่อผ่านมือถือประหยัดพลังงานสูง พร้อม MTU 517
  *   8. รองรับเซอร์โว AFRC D2114TG-S ที่ 333Hz เต็มประสิทธิภาพ (หรือเลือก 50Hz)
  * =====================================================================================
  */
@@ -40,7 +40,7 @@ void setupBLE();
 void updateBLEConfigValue();
 void notifyBLETelemetry();
 void parseBLECommand(const String& body);
-void runDriftMode();
+void runDriftMode(float dt);
 void blinkLED();
 void runSetupMode();
 void handleButton();
@@ -88,15 +88,17 @@ BLECharacteristic* pStatusChar = nullptr;
 BLECharacteristic* pConfigChar = nullptr;
 volatile bool ble_connected = false;
 volatile bool pending_calibrate = false;
+volatile bool pending_save = false;
+volatile bool pending_pwm_reinit = false;
 unsigned long last_ble_notify_ms = 0;
 
 // ==========================================
-// 3. RC SIGNAL VARIABLES & ROCK-SOLID ANTI-JITTER FILTER
+// 3. RC SIGNAL VARIABLES & LOW-LATENCY ANTI-JITTER FILTER
 // ==========================================
 volatile unsigned long ch1_start_time = 0;
 volatile unsigned long ch3_start_time = 0;
-volatile int ch1_buf[5] = {1500, 1500, 1500, 1500, 1500};
-volatile int ch3_buf[5] = {1500, 1500, 1500, 1500, 1500};
+volatile int ch1_buf[3] = {1500, 1500, 1500};
+volatile int ch3_buf[3] = {1500, 1500, 1500};
 volatile uint8_t ch1_idx = 0;
 volatile uint8_t ch3_idx = 0;
 volatile float ch1_filtered = 1500.0f;
@@ -107,20 +109,13 @@ volatile int ch3_pwm = 1500;
 volatile unsigned long last_ch1_time = 0;
 volatile unsigned long last_ch3_time = 0;
 
-// ฟังก์ชันหาค่ามัธยฐาน 5 จุด (5-Point Fast Median) ตัด Glitch & Timer Jitter
-static inline int getMedian5(volatile int* buf) {
-  int arr[5];
-  for (int i = 0; i < 5; i++) arr[i] = buf[i];
-  for (int i = 1; i < 5; i++) {
-    int key = arr[i];
-    int j = i - 1;
-    while (j >= 0 && arr[j] > key) {
-      arr[j + 1] = arr[j];
-      j--;
-    }
-    arr[j + 1] = key;
-  }
-  return arr[2];
+// ฟังก์ชันหาค่ามัธยฐาน 3 จุด (3-Point Fast Median) ตัด Glitch โดยไม่หน่วงมือคนขับ
+static inline int getMedian3(volatile int* buf) {
+  int a = buf[0], b = buf[1], c = buf[2];
+  if (a > b) { int t = a; a = b; b = t; }
+  if (b > c) { int t = b; b = c; c = t; }
+  if (a > b) { int t = a; a = b; b = t; }
+  return b;
 }
 
 void IRAM_ATTR readCH1() {
@@ -131,21 +126,21 @@ void IRAM_ATTR readCH1() {
     unsigned long pulse = now - ch1_start_time;
     if (pulse >= 850 && pulse <= 2150) {
       ch1_buf[ch1_idx] = (int)pulse;
-      ch1_idx = (ch1_idx + 1) % 5;
-      int med = getMedian5(ch1_buf);
+      ch1_idx = (ch1_idx + 1) % 3;
+      int med = getMedian3(ch1_buf);
 
-      // Fast EMA Smoothing (α = 0.35)
-      ch1_filtered = (ch1_filtered * 0.65f) + ((float)med * 0.35f);
+      // Ultra-Responsive EMA Smoothing บน Steering (α = 0.60)
+      ch1_filtered = (ch1_filtered * 0.40f) + ((float)med * 0.60f);
       int target_pwm = (int)(ch1_filtered + 0.5f);
 
-      // Center Snap: ถ้าอยู่ใกล้จุดศูนย์กลาง ±4 µs ล็อกเป็น 1500 µs ทันที
-      if (abs(target_pwm - 1500) <= 4) {
+      // Center Snap: ถ้าอยู่ใกล้จุดศูนย์กลาง ±3 µs ล็อกเป็น 1500 µs ทันที
+      if (abs(target_pwm - 1500) <= 3) {
         target_pwm = 1500;
         ch1_filtered = 1500.0f;
       }
 
-      // Hysteresis Deadband (3 µs): ถ้าขยับไม่เกิน 3 µs ไม่เปลี่ยนค่า
-      if (abs(target_pwm - ch1_pwm) >= 3 || target_pwm == 1500) {
+      // Hysteresis Deadband (2 µs): ลด jitter โดยไม่เสียความละเอียด
+      if (abs(target_pwm - ch1_pwm) >= 2 || target_pwm == 1500) {
         ch1_pwm = target_pwm;
       }
       last_ch1_time = millis();
@@ -161,11 +156,11 @@ void IRAM_ATTR readCH3() {
     unsigned long pulse = now - ch3_start_time;
     if (pulse >= 850 && pulse <= 2150) {
       ch3_buf[ch3_idx] = (int)pulse;
-      ch3_idx = (ch3_idx + 1) % 5;
-      int med = getMedian5(ch3_buf);
+      ch3_idx = (ch3_idx + 1) % 3;
+      int med = getMedian3(ch3_buf);
 
-      // Heavy EMA Smoothing บน Gain Knob (α = 0.20)
-      ch3_filtered = (ch3_filtered * 0.80f) + ((float)med * 0.20f);
+      // Heavy EMA Smoothing บน Gain Knob (α = 0.25)
+      ch3_filtered = (ch3_filtered * 0.75f) + ((float)med * 0.25f);
       int target_pwm = (int)(ch3_filtered + 0.5f);
 
       // Center Snap: ถ้าอยู่ใกล้จุดศูนย์กลาง ±5 µs ล็อกเป็น 1500 µs ทันที
@@ -190,14 +185,17 @@ float gyro_z_offset = 0.0f;
 float filtered_gyro_z = 0.0f;
 float prev_gyro_z = 0.0f;
 float filtered_gyro_d = 0.0f;
+float current_gyro_corr = 0.0f;
 
 float current_servo_pos = 1520.0f;
 unsigned long last_control_time = 0;
 
-const int SERVO_NATIVE_CENTER = 1520; // สเปกโรงงาน AFRC D2114TG-S คือ 1520 µs
-const int CENTER_PWM = 1500;          // ค่ากลางพัลส์มาตรฐานวิทยุ (1500 µs)
+const unsigned long CONTROL_PERIOD_US = 4000; // Deterministic 250 Hz Control Loop
+const int SERVO_NATIVE_CENTER = 1520;         // สเปกโรงงาน AFRC D2114TG-S คือ 1520 µs
+const int CENTER_PWM = 1500;                  // ค่ากลางพัลส์มาตรฐานวิทยุ (1500 µs)
 const int SERVO_TIMER_RES_BITS = 14;
 const int SERVO_MAX_DUTY = (1 << SERVO_TIMER_RES_BITS) - 1; // 16383
+const int CONFIG_SCHEMA_VERSION = 2;
 
 // State Machine สำหรับปุ่มฮาร์ดแวร์
 enum SystemState { CALIBRATING, NORMAL_MODE, SET_LEFT_LIMIT, SET_RIGHT_LIMIT, SET_REVERSE };
@@ -210,6 +208,7 @@ bool temp_reverse = false;
 // 5. HARDWARE SERVO PWM ABSTRACTION
 // ==========================================
 void initServoPWM() {
+  cfg.servo_freq = (cfg.servo_freq == 50) ? 50 : 333;
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
   ledcAttach(PIN_SERVO_OUT, cfg.servo_freq, SERVO_TIMER_RES_BITS);
 #else
@@ -233,13 +232,13 @@ void writeServo(int pwm_us) {
 // 6. PREFERENCES & DEFAULT CONFIG
 // ==========================================
 void loadDefaults() {
-  cfg.p_gain            = 3.2f;
+  cfg.p_gain            = 2.6f;
   cfg.d_gain            = 0.15f;
-  cfg.s_curve           = 0.4f;
-  cfg.steering_priority = 0.5f;
-  cfg.snap_speed        = 2800.0f;
-  cfg.return_speed      = 1600.0f;
-  cfg.damper            = 0.35f;
+  cfg.s_curve           = 0.20f;
+  cfg.steering_priority = 0.35f;
+  cfg.snap_speed        = 4500.0f;
+  cfg.return_speed      = 2200.0f;
+  cfg.damper            = 0.50f;
   cfg.deadband          = 0.5f;
   cfg.limit_left        = 1100;
   cfg.limit_right       = 1900;
@@ -250,22 +249,36 @@ void loadDefaults() {
 
 void loadSettings() {
   preferences.begin("gyro_pro", false);
-  cfg.p_gain            = preferences.getFloat("p_gain", 3.2f);
-  cfg.d_gain            = preferences.getFloat("d_gain", 0.15f);
-  cfg.s_curve           = preferences.getFloat("s_curve", 0.4f);
-  cfg.steering_priority = preferences.getFloat("st_prio", 0.5f);
-  cfg.snap_speed        = preferences.getFloat("snap_spd", 2800.0f);
-  cfg.return_speed      = preferences.getFloat("ret_spd", 1600.0f);
-  cfg.damper            = preferences.getFloat("damper", 0.35f);
-  cfg.deadband          = preferences.getFloat("deadband", 0.5f);
-  cfg.limit_left        = preferences.getInt("lim_l", 1100);
-  cfg.limit_right       = preferences.getInt("lim_r", 1900);
+  int ver = preferences.getInt("cfg_ver", 0);
+  if (ver < CONFIG_SCHEMA_VERSION) {
+    // อัปเกรดพารามิเตอร์ควบคุมจากเวอร์ชันเก่า โดยคงค่าตั้งเชิงกลของแชสซีไว้
+    loadDefaults();
+    cfg.limit_left  = constrain(preferences.getInt("lim_l", 1100), 800, 2200);
+    cfg.limit_right = constrain(preferences.getInt("lim_r", 1900), 800, 2200);
+    cfg.is_reversed = preferences.getBool("reversed", false);
+    cfg.servo_freq  = (preferences.getInt("freq", 333) == 50) ? 50 : 333;
+    cfg.servo_trim  = constrain(preferences.getInt("servo_trim", 0), -150, 150);
+    saveSettings();
+    return;
+  }
+
+  cfg.p_gain            = constrain(preferences.getFloat("p_gain", 2.6f), 0.5f, 8.0f);
+  cfg.d_gain            = constrain(preferences.getFloat("d_gain", 0.15f), 0.0f, 1.0f);
+  cfg.s_curve           = constrain(preferences.getFloat("s_curve", 0.20f), 0.0f, 1.0f);
+  cfg.steering_priority = constrain(preferences.getFloat("st_prio", 0.35f), 0.0f, 1.0f);
+  cfg.snap_speed        = constrain(preferences.getFloat("snap_spd", 4500.0f), 800.0f, 8000.0f);
+  cfg.return_speed      = constrain(preferences.getFloat("ret_spd", 2200.0f), 600.0f, 5000.0f);
+  cfg.damper            = constrain(preferences.getFloat("damper", 0.50f), 0.10f, 0.90f);
+  cfg.deadband          = constrain(preferences.getFloat("deadband", 0.5f), 0.0f, 3.0f);
+  cfg.limit_left        = constrain(preferences.getInt("lim_l", 1100), 800, 2200);
+  cfg.limit_right       = constrain(preferences.getInt("lim_r", 1900), 800, 2200);
   cfg.is_reversed       = preferences.getBool("reversed", false);
-  cfg.servo_freq        = preferences.getInt("freq", 333);
-  cfg.servo_trim        = preferences.getInt("servo_trim", 0);
+  cfg.servo_freq        = (preferences.getInt("freq", 333) == 50) ? 50 : 333;
+  cfg.servo_trim        = constrain(preferences.getInt("servo_trim", 0), -150, 150);
 }
 
 void saveSettings() {
+  preferences.putInt("cfg_ver", CONFIG_SCHEMA_VERSION);
   preferences.putFloat("p_gain", cfg.p_gain);
   preferences.putFloat("d_gain", cfg.d_gain);
   preferences.putFloat("s_curve", cfg.s_curve);
@@ -295,6 +308,10 @@ void calibrateGyroOffset() {
     delay(5);
   }
   gyro_z_offset = (float)sum_z / (float)SAMPLES;
+  filtered_gyro_z = 0.0f;
+  prev_gyro_z = 0.0f;
+  filtered_gyro_d = 0.0f;
+  current_gyro_corr = 0.0f;
 
   digitalWrite(PIN_LED, HIGH);
   Serial.printf("[GYRO] Offset: %.2f\n", gyro_z_offset);
@@ -344,6 +361,14 @@ void parseBLECommand(const String& body) {
     return;
   }
 
+  if (body.indexOf("\"cmd\":\"reset\"") != -1) {
+    loadDefaults();
+    pending_pwm_reinit = true;
+    pending_save = true;
+    updateBLEConfigValue();
+    return;
+  }
+
   if (body.indexOf("\"cmd\":\"trim\"") != -1) {
     int v_idx = body.indexOf("\"val\":");
     if (v_idx != -1) {
@@ -354,37 +379,41 @@ void parseBLECommand(const String& body) {
   }
 
   int p_idx = body.indexOf("\"p_gain\":");
-  if (p_idx != -1) cfg.p_gain = body.substring(p_idx + 9).toFloat();
+  if (p_idx != -1) cfg.p_gain = constrain(body.substring(p_idx + 9).toFloat(), 0.5f, 8.0f);
 
   int d_idx = body.indexOf("\"d_gain\":");
-  if (d_idx != -1) cfg.d_gain = body.substring(d_idx + 9).toFloat();
+  if (d_idx != -1) cfg.d_gain = constrain(body.substring(d_idx + 9).toFloat(), 0.0f, 1.0f);
 
   int s_idx = body.indexOf("\"s_curve\":");
-  if (s_idx != -1) cfg.s_curve = body.substring(s_idx + 10).toFloat();
+  if (s_idx != -1) cfg.s_curve = constrain(body.substring(s_idx + 10).toFloat(), 0.0f, 1.0f);
 
   int st_idx = body.indexOf("\"st_prio\":");
-  if (st_idx != -1) cfg.steering_priority = body.substring(st_idx + 10).toFloat();
+  if (st_idx != -1) cfg.steering_priority = constrain(body.substring(st_idx + 10).toFloat(), 0.0f, 1.0f);
 
   int snap_idx = body.indexOf("\"snap_spd\":");
-  if (snap_idx != -1) cfg.snap_speed = body.substring(snap_idx + 11).toFloat();
+  if (snap_idx != -1) cfg.snap_speed = constrain(body.substring(snap_idx + 11).toFloat(), 800.0f, 8000.0f);
 
   int ret_idx = body.indexOf("\"ret_spd\":");
-  if (ret_idx != -1) cfg.return_speed = body.substring(ret_idx + 10).toFloat();
+  if (ret_idx != -1) cfg.return_speed = constrain(body.substring(ret_idx + 10).toFloat(), 600.0f, 5000.0f);
 
   int dmp_idx = body.indexOf("\"damper\":");
-  if (dmp_idx != -1) cfg.damper = body.substring(dmp_idx + 9).toFloat();
+  if (dmp_idx != -1) cfg.damper = constrain(body.substring(dmp_idx + 9).toFloat(), 0.10f, 0.90f);
 
   int db_idx = body.indexOf("\"deadband\":");
-  if (db_idx != -1) cfg.deadband = body.substring(db_idx + 11).toFloat();
+  if (db_idx != -1) cfg.deadband = constrain(body.substring(db_idx + 11).toFloat(), 0.0f, 3.0f);
 
   int ll_idx = body.indexOf("\"lim_l\":");
-  if (ll_idx != -1) cfg.limit_left = body.substring(ll_idx + 8).toInt();
+  if (ll_idx != -1) cfg.limit_left = constrain(body.substring(ll_idx + 8).toInt(), 800, 2200);
 
   int lr_idx = body.indexOf("\"lim_r\":");
-  if (lr_idx != -1) cfg.limit_right = body.substring(lr_idx + 8).toInt();
+  if (lr_idx != -1) cfg.limit_right = constrain(body.substring(lr_idx + 8).toInt(), 800, 2200);
 
   int rev_idx = body.indexOf("\"reversed\":");
-  if (rev_idx != -1) cfg.is_reversed = body.substring(rev_idx + 11).startsWith("true");
+  if (rev_idx != -1) {
+    String rev_sub = body.substring(rev_idx + 11);
+    rev_sub.trim();
+    cfg.is_reversed = rev_sub.startsWith("true");
+  }
 
   int trim_idx = body.indexOf("\"servo_trim\":");
   if (trim_idx != -1) cfg.servo_trim = constrain(body.substring(trim_idx + 13).toInt(), -150, 150);
@@ -392,11 +421,12 @@ void parseBLECommand(const String& body) {
   int frq_idx = body.indexOf("\"freq\":");
   if (frq_idx != -1) {
     int old_freq = cfg.servo_freq;
-    cfg.servo_freq = body.substring(frq_idx + 7).toInt();
-    if (old_freq != cfg.servo_freq) initServoPWM();
+    int req_freq = body.substring(frq_idx + 7).toInt();
+    cfg.servo_freq = (req_freq == 50) ? 50 : 333;
+    if (old_freq != cfg.servo_freq) pending_pwm_reinit = true;
   }
 
-  saveSettings();
+  pending_save = true;
   updateBLEConfigValue();
 }
 
@@ -422,6 +452,7 @@ void notifyBLETelemetry() {
 
 void setupBLE() {
   BLEDevice::init("16WORKs-GYRO");
+  BLEDevice::setMTU(517);
   BLEDevice::setPower(ESP_PWR_LVL_N0); // 0 dBm ประหยัดพลังงานสูงสุด เย็นเฉียบตลอดการขับขี่
 
   pServer = BLEDevice::createServer();
@@ -433,7 +464,9 @@ void setupBLE() {
     BLE_CHAR_STATUS_UUID,
     BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
   );
+#if !defined(CONFIG_NIMBLE_ENABLED)
   pStatusChar->addDescriptor(new BLE2902());
+#endif
 
   pConfigChar = pService->createCharacteristic(
     BLE_CHAR_CONFIG_UUID,
@@ -478,8 +511,8 @@ void setup() {
   mpu.initialize();
   if (mpu.testConnection()) {
     Serial.println(F("[OK] MPU6050 Connected."));
-    // 1) เปิด Hardware Digital Low Pass Filter (DLPF) 20Hz เพื่อตัดการสั่นสะเทือนจากมอเตอร์รอบจัดตอนกำคันเร่งเต็ม
-    mpu.setDLPFMode(4); // 4 = MPU6050_DLPF_BW_20 (Gyro Cutoff 20Hz - นิ่งสนิทตอนกดคันเร่งเต็ม)
+    // 1) เปิด Hardware Digital Low Pass Filter (DLPF) 42Hz ลด Phase Lag แต่ยังตัดสั่นมอเตอร์ได้ดี
+    mpu.setDLPFMode(3); // 3 = MPU6050_DLPF_BW_42 (Gyro Cutoff 42Hz, Delay ~4.8ms)
     // 2) ตั้งค่า Full Scale Gyro Range ±500 deg/s (65.5 LSB/deg/s) สมดุลความละเอียดสูง + รองรับ Reverse Entry
     mpu.setFullScaleGyroRange(1);
   } else {
@@ -491,6 +524,7 @@ void setup() {
 
   // 4. เริ่มต้น PWM
   initServoPWM();
+  current_servo_pos = (float)(SERVO_NATIVE_CENTER + cfg.servo_trim);
   writeServo(SERVO_NATIVE_CENTER + cfg.servo_trim);
 
   // 5. ตั้งค่า Interrupt รับสัญญาณ RC
@@ -512,12 +546,17 @@ void setup() {
 // ==========================================
 // 12. DRIFT CONTROL ALGORITHM (PURE NORMAL RATE P+D)
 // ==========================================
-void runDriftMode() {
+void runDriftMode(float dt) {
   int servo_center = SERVO_NATIVE_CENTER + cfg.servo_trim;
 
   // Failsafe: รีโมทหลุดเกิน 200ms
   bool signal_lost = (millis() - last_ch1_time > 200);
   if (signal_lost) {
+    current_gyro_corr = 0.0f;
+    filtered_gyro_z = 0.0f;
+    prev_gyro_z = 0.0f;
+    filtered_gyro_d = 0.0f;
+    current_servo_pos = (float)servo_center;
     writeServo(servo_center);
     digitalWrite(PIN_LED, (millis() / 200) % 2 == 0 ? LOW : HIGH);
     return;
@@ -528,24 +567,30 @@ void runDriftMode() {
   // 1. อ่านค่า Gyro Z + Offset (Full Scale ±500 deg/s -> 65.5 LSB/deg/s)
   float raw_gyro_z = ((float)mpu.getRotationZ() - gyro_z_offset) / 65.5f; // deg/s
 
-  // 2. Deadband Filter (ตัด Noise ตอนอยู่นิ่ง)
-  if (fabs(raw_gyro_z) < cfg.deadband) {
+  // 2. Smooth Deadband Filter (ตัด Noise ตอนอยู่นิ่งโดยไม่เกิดรอยต่อกระตุก)
+  if (fabs(raw_gyro_z) <= cfg.deadband) {
     raw_gyro_z = 0.0f;
+  } else {
+    raw_gyro_z = (raw_gyro_z > 0.0f) ? (raw_gyro_z - cfg.deadband) : (raw_gyro_z + cfg.deadband);
   }
 
   // 3. Low-Pass Filter (Damper)
-  filtered_gyro_z = (raw_gyro_z * cfg.damper) + (filtered_gyro_z * (1.0f - cfg.damper));
-  if (fabs(filtered_gyro_z) < 0.15f) {
-    filtered_gyro_z = 0.0f; // ตัดเศษทศนิยมที่ค้างอยู่นิ่งๆ ให้เป็น 0.0 สนิท
+  float damper_alpha = constrain(cfg.damper, 0.05f, 0.95f);
+  filtered_gyro_z = (raw_gyro_z * damper_alpha) + (filtered_gyro_z * (1.0f - damper_alpha));
+  if (raw_gyro_z == 0.0f && fabs(filtered_gyro_z) < 0.10f) {
+    filtered_gyro_z = 0.0f; // ตัดเศษทศนิยมตอนจอดนิ่งให้เป็น 0.0 สนิท
   }
 
-  // 4. D-Term (Predictive Angular Acceleration with D-Term Low-Pass Filter & Vibration Deadband)
-  // กรอง D-Term แยกต่างหาก และตัดแรงสั่นสะเทือนระดับ Micro-ripple ตอนกดคันเร่งเต็ม
-  float raw_gyro_d = (filtered_gyro_z - prev_gyro_z);
+  // 4. Predictive D-Term (Angular Acceleration deg/s^2 with Non-Destructive Vibration Gate)
+  float gyro_accel = (filtered_gyro_z - prev_gyro_z) / dt;
   prev_gyro_z = filtered_gyro_z;
-  filtered_gyro_d = (raw_gyro_d * 0.12f) + (filtered_gyro_d * 0.88f);
-  if (fabs(filtered_gyro_d) < 0.45f) {
-    filtered_gyro_d = 0.0f; // ตัดการสั่นสะเทือนความถี่สูงจากมอเตอร์ตอนกดคันเร่งเต็ม
+  filtered_gyro_d = (gyro_accel * 0.35f) + (filtered_gyro_d * 0.65f);
+
+  // ตัด Micro-vibration เฉพาะค่าส่งออก โดยไม่ล้าง memory ของ Filter
+  const float D_VIB_DEADBAND = 120.0f; // deg/s^2
+  float d_effective = 0.0f;
+  if (fabs(filtered_gyro_d) > D_VIB_DEADBAND) {
+    d_effective = (filtered_gyro_d > 0.0f) ? (filtered_gyro_d - D_VIB_DEADBAND) : (filtered_gyro_d + D_VIB_DEADBAND);
   }
 
   // 5. RC Inputs
@@ -570,7 +615,7 @@ void runDriftMode() {
   float active_gain = gain * (1.0f - (driver_ratio * cfg.steering_priority));
 
   // 7. Dynamic Progressive Expo บนค่า Gyro (รองรับเพดาน ±500 deg/s สำหรับ Reverse Entry)
-  float gyro_sign = (filtered_gyro_z >= 0) ? 1.0f : -1.0f;
+  float gyro_sign = (filtered_gyro_z >= 0.0f) ? 1.0f : -1.0f;
   float gyro_abs = fabs(filtered_gyro_z);
   float gyro_norm = gyro_abs / 350.0f;
   if (gyro_norm > 1.5f) gyro_norm = 1.5f;
@@ -580,45 +625,40 @@ void runDriftMode() {
   float shaped_gyro_z = gyro_sign * (curved_gyro * 350.0f);
 
   // 8. Control Math: Pure Normal Rate Mode (P + D)
-  float correction = (shaped_gyro_z * cfg.p_gain + filtered_gyro_d * cfg.d_gain * 10.0f) * active_gain;
+  float p_term = shaped_gyro_z * cfg.p_gain;
+  float d_term = d_effective * (cfg.d_gain * 0.25f);
+  float target_gyro_corr = (p_term + d_term) * active_gain;
 
   // กลับทิศทาง Gyro
   if (cfg.is_reversed) {
-    correction = -correction;
+    target_gyro_corr = -target_gyro_corr;
   }
 
-  // 9. Target Servo Output & Safe Endpoints
-  // รวม Servo Center (1520 + Sub-Trim) + พวงมาลัยคนขับ - แรงแก้ไจโร
-  float raw_target = servo_center + steering_input - correction;
+  // จำกัดระยะ Gyro Correction ให้อยู่ในขอบเขต EPA ป้องกัน Windup
   int min_lim = min(cfg.limit_left, cfg.limit_right);
   int max_lim = max(cfg.limit_left, cfg.limit_right);
-  raw_target = constrain(raw_target, min_lim, max_lim);
+  float max_travel = (float)max(abs(max_lim - servo_center), abs(servo_center - min_lim));
+  target_gyro_corr = constrain(target_gyro_corr, -max_travel, max_travel);
 
-  // 10. Asymmetric Slew Rate Limiter (Snap Out / Smooth Return)
-  unsigned long now = micros();
-  float dt = (now - last_control_time) / 1000000.0f;
-  last_control_time = now;
-  if (dt > 0.05f) dt = 0.004f;
-
-  float diff = raw_target - current_servo_pos;
-  if (fabs(diff) < 0.6f) {
-    current_servo_pos = raw_target; // Snap to target เมื่อเข้าใกล้ในระดับ sub-microsecond
+  // 9. Asymmetric Slew Rate Limiter บน Gyro Correction เท่านั้น (ไม่หน่วงพวงมาลัยคนขับ)
+  float diff_corr = target_gyro_corr - current_gyro_corr;
+  if (fabs(diff_corr) < 0.6f) {
+    current_gyro_corr = target_gyro_corr;
   } else {
-    bool is_counter_steering = (raw_target - servo_center) * diff > 0;
-    float speed_limit = is_counter_steering ? cfg.snap_speed : cfg.return_speed;
+    // ใช้ Snap Speed เมื่อต้องเด้งสวนเพิ่มแรงแก้ หรือเมื่อพลิกสลับฝั่งข้ามศูนย์ (Transition)
+    bool is_snapping = (target_gyro_corr * current_gyro_corr < 0.0f) ||
+                       (fabs(target_gyro_corr) > fabs(current_gyro_corr));
+    float speed_limit = is_snapping ? cfg.snap_speed : cfg.return_speed;
     float max_step = speed_limit * dt;
-    float constrained_step = constrain(diff, -max_step, max_step);
-    current_servo_pos += constrained_step;
+    current_gyro_corr += constrain(diff_corr, -max_step, max_step);
   }
 
-  // Output Hysteresis: ป้องกันเซอร์โวสั่นกระตุกจากการปัดเศษ microsecond
-  static int last_written_pwm = 1520;
-  int target_write_pwm = (int)(current_servo_pos + 0.5f);
-  if (abs(target_write_pwm - last_written_pwm) >= 1 || target_write_pwm == (SERVO_NATIVE_CENTER + cfg.servo_trim)) {
-    last_written_pwm = target_write_pwm;
-  }
+  // 10. รวม Servo Center (1520 + Sub-Trim) + พวงมาลัยคนขับโดยตรง - แรงแก้ไจโร และคุม Endpoints
+  float final_target = (float)servo_center + (float)steering_input - current_gyro_corr;
+  final_target = constrain(final_target, (float)min_lim, (float)max_lim);
+  current_servo_pos = final_target;
 
-  writeServo(last_written_pwm);
+  writeServo((int)(final_target + 0.5f));
 }
 
 // ==========================================
@@ -692,6 +732,16 @@ void handleButton() {
 // 13. MAIN LOOP (Deterministic 250Hz)
 // ==========================================
 void loop() {
+  if (pending_pwm_reinit) {
+    pending_pwm_reinit = false;
+    initServoPWM();
+  }
+
+  if (pending_save) {
+    pending_save = false;
+    saveSettings();
+  }
+
   if (pending_calibrate) {
     pending_calibrate = false;
     calibrateGyroOffset();
@@ -706,11 +756,19 @@ void loop() {
 
   handleButton(); // จัดการปุ่มกด BOOT บนบอร์ด
 
-  if (currentState == NORMAL_MODE) {
-    runDriftMode();
-  } else {
-    runSetupMode();
-  }
+  unsigned long now_us = micros();
+  unsigned long elapsed_us = now_us - last_control_time;
+  if (elapsed_us >= CONTROL_PERIOD_US) {
+    float dt = (float)elapsed_us / 1000000.0f;
+    last_control_time = now_us;
+    if (dt > 0.05f || dt <= 0.0f) dt = 0.004f;
 
-  delay(4); // 250Hz Control Loop Rate
+    if (currentState == NORMAL_MODE) {
+      runDriftMode(dt);
+    } else {
+      runSetupMode();
+    }
+  } else if (elapsed_us < (CONTROL_PERIOD_US - 1500)) {
+    delay(1); // คืนเวลาให้ BLE Task และลดภาระ CPU
+  }
 }

@@ -305,9 +305,9 @@
     <div class="param-row">
       <div class="param-header">
         <span>P-Gain (Rate Authority)</span>
-        <span class="param-val" id="lbl_p_gain">3.2</span>
+        <span class="param-val" id="lbl_p_gain">2.6</span>
       </div>
-      <input type="range" id="cfg_p_gain" min="0.5" max="8.0" step="0.1" value="3.2" oninput="updLbl('p_gain')">
+      <input type="range" id="cfg_p_gain" min="0.5" max="8.0" step="0.1" value="2.6" oninput="updLbl('p_gain')">
     </div>
 
     <div class="param-row">
@@ -321,17 +321,17 @@
     <div class="param-row">
       <div class="param-header">
         <span>S-Curve Exponential</span>
-        <span class="param-val" id="lbl_s_curve">40 %</span>
+        <span class="param-val" id="lbl_s_curve">20 %</span>
       </div>
-      <input type="range" id="cfg_s_curve" min="0" max="100" step="1" value="40" oninput="updLblPct('s_curve')">
+      <input type="range" id="cfg_s_curve" min="0" max="100" step="1" value="20" oninput="updLblPct('s_curve')">
     </div>
 
     <div class="param-row">
       <div class="param-header">
         <span>Steering Priority (Transition Cutoff)</span>
-        <span class="param-val" id="lbl_st_prio">50 %</span>
+        <span class="param-val" id="lbl_st_prio">35 %</span>
       </div>
-      <input type="range" id="cfg_st_prio" min="0" max="100" step="1" value="50" oninput="updLblPct('st_prio')">
+      <input type="range" id="cfg_st_prio" min="0" max="100" step="1" value="35" oninput="updLblPct('st_prio')">
     </div>
   </div>
 
@@ -354,16 +354,16 @@
       <div class="param-row">
         <div class="param-header">
           <span>Snap Speed</span>
-          <span class="param-val" id="lbl_snap_spd">2800</span>
+          <span class="param-val" id="lbl_snap_spd">4500</span>
         </div>
-        <input type="range" id="cfg_snap_spd" min="800" max="6000" step="50" value="2800" oninput="updLbl('snap_spd')">
+        <input type="range" id="cfg_snap_spd" min="800" max="8000" step="50" value="4500" oninput="updLbl('snap_spd')">
       </div>
       <div class="param-row">
         <div class="param-header">
           <span>Return Speed</span>
-          <span class="param-val" id="lbl_ret_spd">1600</span>
+          <span class="param-val" id="lbl_ret_spd">2200</span>
         </div>
-        <input type="range" id="cfg_ret_spd" min="600" max="3000" step="50" value="1600" oninput="updLbl('ret_spd')">
+        <input type="range" id="cfg_ret_spd" min="600" max="5000" step="50" value="2200" oninput="updLbl('ret_spd')">
       </div>
     </div>
 
@@ -393,9 +393,9 @@
       <div class="param-row">
         <div class="param-header">
           <span>Damper</span>
-          <span class="param-val" id="lbl_damper">0.35</span>
+          <span class="param-val" id="lbl_damper">0.50</span>
         </div>
-        <input type="range" id="cfg_damper" min="0.10" max="0.90" step="0.05" value="0.35" oninput="updLbl('damper')">
+        <input type="range" id="cfg_damper" min="0.10" max="0.90" step="0.05" value="0.50" oninput="updLbl('damper')">
       </div>
       <div class="param-row">
         <div class="param-header">
@@ -427,6 +427,7 @@
       <button class="btn-save" onclick="saveConfig()">SAVE CONFIG</button>
       <button class="btn-cal" onclick="calibrate()">ZERO GYRO</button>
     </div>
+    <button class="btn-cal" style="width:100%; margin-top:8px; color:var(--red); border-color:rgba(244,63,94,0.35);" onclick="resetDefaults()">RESET DEFAULTS</button>
   </div>
 
 </div>
@@ -575,6 +576,19 @@ async function saveConfig() {
 
 async function calibrate() {
   if (await sendBLE({ cmd: 'cal' })) showToast('CALIBRATING SENSOR...');
+}
+
+async function resetDefaults() {
+  if (!confirm('Reset all tuning values to factory defaults?')) return;
+  if (await sendBLE({ cmd: 'reset' })) {
+    setTimeout(async () => {
+      try {
+        const cfgVal = await charConfig.readValue();
+        applyConfigJSON(dec.decode(cfgVal));
+        showToast('DEFAULTS RESTORED');
+      } catch (e) {}
+    }, 150);
+  }
 }
 </script>
 </body>
