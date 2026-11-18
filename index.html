@@ -255,7 +255,7 @@
   <div class="header-bar">
     <div>
       <div class="header-title">16WORKs <span>Drift Gyro</span></div>
-      <div class="header-sub">ESP32-C3 BLE 5.0 · AFRC D2114TG-S 333Hz</div>
+      <div class="header-sub" id="fw_status">ESP32-C3 BLE 5.0 · AFRC D2114TG-S 333Hz</div>
     </div>
     <button id="btn_ble" class="btn-ble" onclick="toggleBLE()">CONNECT BLE</button>
   </div>
@@ -373,14 +373,14 @@
           <span>EPA Left</span>
           <span class="param-val" id="lbl_lim_l">1100 µs</span>
         </div>
-        <input type="range" id="cfg_lim_l" min="850" max="1450" step="5" value="1100" oninput="updLblUs('lim_l')">
+        <input type="range" id="cfg_lim_l" min="800" max="2200" step="5" value="1100" oninput="updLblUs('lim_l')">
       </div>
       <div class="param-row">
         <div class="param-header">
           <span>EPA Right</span>
           <span class="param-val" id="lbl_lim_r">1900 µs</span>
         </div>
-        <input type="range" id="cfg_lim_r" min="1550" max="2150" step="5" value="1900" oninput="updLblUs('lim_r')">
+        <input type="range" id="cfg_lim_r" min="800" max="2200" step="5" value="1900" oninput="updLblUs('lim_r')">
       </div>
     </div>
   </div>
@@ -423,27 +423,63 @@
       </div>
     </div>
 
+    <div style="margin-top:10px; padding:8px 10px; background:#11141b; border:1px solid #242936; border-radius:3px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+        <span style="font-size:0.72rem; font-weight:700; color:var(--text-dim);">TUNING PIN (FW 3.4+)</span>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <input type="password" id="cfg_pin" maxlength="8" inputmode="numeric" value="1616"
+                 style="width:84px; background:var(--bg-input); color:var(--text-main); border:1px solid var(--border-card); padding:4px 6px; border-radius:3px; font-family:ui-monospace,Consolas,monospace; font-size:0.78rem; text-align:center;"
+                 onchange="savePinLocal()">
+          <button class="btn-cal" style="padding:5px 8px; font-size:0.68rem;" onclick="changeDevicePin()">CHANGE</button>
+        </div>
+      </div>
+    </div>
+
     <div class="btn-grid">
       <button class="btn-save" onclick="saveConfig()">SAVE CONFIG</button>
       <button class="btn-cal" onclick="calibrate()">ZERO GYRO</button>
     </div>
-    <button class="btn-cal" style="width:100%; margin-top:8px; color:var(--red); border-color:rgba(244,63,94,0.35);" onclick="resetDefaults()">RESET DEFAULTS</button>
+    <div class="btn-grid" style="margin-top:8px;">
+      <button class="btn-cal" onclick="copyCurrentSettings()">COPY SETTINGS</button>
+      <button class="btn-cal" style="color:var(--red); border-color:rgba(244,63,94,0.35);" onclick="resetDefaults()">RESET TUNING</button>
+    </div>
   </div>
 
 </div>
 <div id="toast" class="toast-banner">SAVED</div>
 
 <script>
-const SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
-const CHAR_STATUS_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
-const CHAR_CONFIG_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a9';
+const SERVICE_UUID = '16a00001-7e10-4b5a-9c3d-160000000001';
+const CHAR_STATUS_UUID = '16a00002-7e10-4b5a-9c3d-160000000002';
+const CHAR_CONFIG_UUID = '16a00003-7e10-4b5a-9c3d-160000000003';
+
+const LEGACY_SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
+const LEGACY_CHAR_STATUS_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
+const LEGACY_CHAR_CONFIG_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a9';
+const EXPECTED_FW = '3.4';
 
 let bleDevice = null;
 let charStatus = null;
 let charConfig = null;
+let isLegacyFW = false;
 let trimTimer = null;
 const enc = new TextEncoder();
 const dec = new TextDecoder();
+
+(function initPinInput() {
+  try {
+    const saved = localStorage.getItem('gyro_pin');
+    if (saved) document.getElementById('cfg_pin').value = saved;
+  } catch (e) {}
+})();
+
+function getPin() {
+  return (document.getElementById('cfg_pin').value || '1616').trim();
+}
+
+function savePinLocal() {
+  try { localStorage.setItem('gyro_pin', getPin()); } catch (e) {}
+}
 
 function updLbl(k) { document.getElementById('lbl_'+k).innerText = document.getElementById('cfg_'+k).value; }
 function updLblPct(k) { document.getElementById('lbl_'+k).innerText = document.getElementById('cfg_'+k).value + ' %'; }
@@ -452,7 +488,8 @@ function updLblUs(k) { document.getElementById('lbl_'+k).innerText = document.ge
 function showToast(msg) {
   let t = document.getElementById('toast');
   t.innerText = msg; t.style.display = 'block';
-  setTimeout(() => t.style.display = 'none', 2000);
+  clearTimeout(window._toastTimer);
+  window._toastTimer = setTimeout(() => t.style.display = 'none', 2200);
 }
 
 async function toggleBLE() {
@@ -467,14 +504,24 @@ async function toggleBLE() {
   try {
     showToast('SEARCHING BLE...');
     bleDevice = await navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: '16WORKs' }, { services: [SERVICE_UUID] }],
-      optionalServices: [SERVICE_UUID]
+      filters: [{ namePrefix: '16WORKs' }],
+      optionalServices: [SERVICE_UUID, LEGACY_SERVICE_UUID]
     });
     bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
     const server = await bleDevice.gatt.connect();
-    const service = await server.getPrimaryService(SERVICE_UUID);
-    charStatus = await service.getCharacteristic(CHAR_STATUS_UUID);
-    charConfig = await service.getCharacteristic(CHAR_CONFIG_UUID);
+
+    let service = null;
+    isLegacyFW = false;
+    try {
+      service = await server.getPrimaryService(SERVICE_UUID);
+      charStatus = await service.getCharacteristic(CHAR_STATUS_UUID);
+      charConfig = await service.getCharacteristic(CHAR_CONFIG_UUID);
+    } catch (e) {
+      service = await server.getPrimaryService(LEGACY_SERVICE_UUID);
+      charStatus = await service.getCharacteristic(LEGACY_CHAR_STATUS_UUID);
+      charConfig = await service.getCharacteristic(LEGACY_CHAR_CONFIG_UUID);
+      isLegacyFW = true;
+    }
 
     await charStatus.startNotifications();
     charStatus.addEventListener('characteristicvaluechanged', onStatusNotify);
@@ -485,16 +532,23 @@ async function toggleBLE() {
     let btn = document.getElementById('btn_ble');
     btn.innerText = 'BLE CONNECTED';
     btn.classList.add('connected');
-    showToast('BLE CONNECTED');
+    showToast(isLegacyFW ? 'CONNECTED (LEGACY FW)' : 'BLE CONNECTED');
   } catch (e) {
+    charStatus = null;
+    charConfig = null;
+    isLegacyFW = false;
     showToast('BLE CANCELLED / ERROR');
   }
 }
 
 function onDisconnected() {
+  charStatus = null;
+  charConfig = null;
+  isLegacyFW = false;
   let btn = document.getElementById('btn_ble');
   btn.innerText = 'CONNECT BLE';
   btn.classList.remove('connected');
+  document.getElementById('fw_status').innerText = 'ESP32-C3 BLE 5.0 · AFRC D2114TG-S 333Hz';
   showToast('BLE DISCONNECTED');
 }
 
@@ -510,6 +564,10 @@ function onStatusNotify(event) {
     let pctServo = ((d.servo - 1000) / 1000) * 100;
     document.getElementById('bar_ch1').style.width = Math.max(0, Math.min(100, pctCh1)) + '%';
     document.getElementById('bar_servo').style.width = Math.max(0, Math.min(100, pctServo)) + '%';
+
+    if (d.i2c_err && d.i2c_err > 0) {
+      document.getElementById('fw_status').innerText = 'WARNING: I2C SENSOR ERRORS (' + d.i2c_err + ')';
+    }
   } catch (e) {}
 }
 
@@ -532,18 +590,23 @@ function applyConfigJSON(str) {
     let tr = d.servo_trim || 0;
     document.getElementById('cfg_servo_trim').value = tr;
     document.getElementById('lbl_servo_trim').innerText = (tr > 0 ? '+' : '') + tr + ' µs';
+
+    let fwLabel = d.fw ? ('FW V' + d.fw + (d.fw !== EXPECTED_FW ? ' (UPDATE AVAIL)' : '')) : 'LEGACY FW (READ OK)';
+    document.getElementById('fw_status').innerText = (bleDevice && bleDevice.name ? bleDevice.name : 'ESP32-C3') + ' · ' + fwLabel;
   } catch (e) {}
 }
 
 async function sendBLE(obj) {
-  if (!charConfig) {
+  if (!charConfig || !bleDevice || !bleDevice.gatt.connected) {
     showToast('CONNECT BLE FIRST');
     return false;
   }
   try {
-    await charConfig.writeValue(enc.encode(JSON.stringify(obj)));
+    let payload = isLegacyFW ? obj : Object.assign({ pin: getPin() }, obj);
+    await charConfig.writeValue(enc.encode(JSON.stringify(payload)));
     return true;
   } catch (e) {
+    showToast('SEND FAILED');
     return false;
   }
 }
@@ -556,6 +619,7 @@ function liveTrim() {
 }
 
 async function saveConfig() {
+  savePinLocal();
   let body = {
     p_gain: parseFloat(document.getElementById('cfg_p_gain').value),
     d_gain: parseFloat(document.getElementById('cfg_d_gain').value),
@@ -578,15 +642,59 @@ async function calibrate() {
   if (await sendBLE({ cmd: 'cal' })) showToast('CALIBRATING SENSOR...');
 }
 
+async function changeDevicePin() {
+  if (isLegacyFW) {
+    alert('Tuning PIN requires Firmware V3.4+.');
+    return;
+  }
+  let np = prompt('Enter new Tuning PIN (4-8 characters):', getPin());
+  if (!np) return;
+  np = np.trim();
+  if (np.length < 4 || np.length > 8) {
+    alert('PIN must be 4-8 characters.');
+    return;
+  }
+  if (await sendBLE({ new_pin: np })) {
+    document.getElementById('cfg_pin').value = np;
+    savePinLocal();
+    showToast('PIN UPDATED');
+  }
+}
+
+function copyCurrentSettings() {
+  const txt = [
+    'P-Gain: ' + document.getElementById('cfg_p_gain').value,
+    'D-Gain: ' + document.getElementById('cfg_d_gain').value,
+    'S-Curve: ' + document.getElementById('cfg_s_curve').value + '%',
+    'Steering Priority: ' + document.getElementById('cfg_st_prio').value + '%',
+    'Sub-Trim: ' + document.getElementById('cfg_servo_trim').value + ' us',
+    'Snap Speed: ' + document.getElementById('cfg_snap_spd').value,
+    'Return Speed: ' + document.getElementById('cfg_ret_spd').value,
+    'EPA Left/Right: ' + document.getElementById('cfg_lim_l').value + ' / ' + document.getElementById('cfg_lim_r').value + ' us',
+    'Damper: ' + document.getElementById('cfg_damper').value,
+    'Deadband: ' + document.getElementById('cfg_deadband').value,
+    'Direction: ' + (document.getElementById('cfg_reversed').value === '1' ? 'Reversed' : 'Normal'),
+    'Freq: ' + document.getElementById('cfg_freq').value + ' Hz'
+  ].join('\n');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).then(() => showToast('COPIED SETTINGS')).catch(() => alert(txt));
+  } else {
+    alert(txt);
+  }
+}
+
 async function resetDefaults() {
-  if (!confirm('Reset all tuning values to factory defaults?')) return;
+  if (!confirm('Reset tuning parameters to defaults? (EPA, Direction, Frequency & Sub-Trim are preserved on V3.4+)')) return;
   if (await sendBLE({ cmd: 'reset' })) {
     setTimeout(async () => {
       try {
+        if (!charConfig) return;
         const cfgVal = await charConfig.readValue();
         applyConfigJSON(dec.decode(cfgVal));
-        showToast('DEFAULTS RESTORED');
-      } catch (e) {}
+        showToast('TUNING RESET');
+      } catch (e) {
+        showToast('READBACK FAILED');
+      }
     }, 150);
   }
 }

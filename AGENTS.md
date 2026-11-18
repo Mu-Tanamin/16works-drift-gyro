@@ -24,7 +24,7 @@
   - **ห้ามใส่โหมด AVCS / Heading Hold / Integral I-Gain กลับเข้ามา**
 - **CH3 Gain Mapping**:
   - สัญญาณพัลส์ CH3 (1000 - 2000 µs) กึ่งกลาง 1500 µs (เลข 0 บนรีโมท) = 0% (ปิดไจโร)
-  - หมุนไปฝั่งบวก (>1500 µs) หรือฝั่งลบ (<1500 µs) เพิ่ม Gain 0% - 100% เท่ากันทั้งสองฝั่ง (`gain = abs(ch3 - 1500) / 500.0f`)
+  - หมุนไปฝั่งบวก (>1500 µs) หรือฝั่งลบ (<1500 µs) มี Center Deadband ±10 µs และเพิ่ม Gain 0% - 100% เท่ากันทั้งสองฝั่ง (`gain = min(1.0f, abs(ch3 - 1500) / 490.0f)` เมื่อ `abs(ch3 - 1500) > 10`)
 - **Micro Drift Dynamics**:
   - ต้องคงระบบ **Asymmetric Slew Rate** (Snap Speed เด้งสวนเร็วเพื่อกันสปิน vs Return Speed คืนล้อนุ่มนวลเพื่อกันท้ายดีด)
   - ต้องคง **Predictive D-Term** (คำนวณความเร่งการหมุน), **Steering Priority** (ลดทอนไจโรตอนคนขับเลี้ยวสุด) และ **S-Curve Expo**
@@ -35,12 +35,12 @@
   - เซอร์โว AFRC D2114TG-S วาง Native Center ไว้ที่ **1520 µs** + `servo_trim`
 
 ## 3. Coding & Arduino IDE Standards for ESP32 Core 3.x
+- **Core Requirement**: **ต้องใช้ ESP32 Arduino Core 3.x ขึ้นไป** (ใช้ `ledcAttach` / `ledcWrite` และ `BLECharacteristic::getValue()` ที่คืนค่าเป็น `String`)
 - **Forward Declarations**: ต้องประกาศ Function Prototypes ไว้ที่ส่วนบนของไฟล์ `.ino` ทุกครั้งเพื่อป้องกันข้อผิดพลาด `'func' was not declared in this scope`
-- **LEDC Dual-Core API**: ต้องเขียน `#if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)` เพื่อรองรับทั้ง Core 2.x (`ledcSetup`/`ledcAttachPin`) และ Core 3.x (`ledcAttach`)
 - **Arduino IDE Settings Reminder**:
   - Board: `ESP32C3 Dev Module`
   - Partition Scheme: `Default 4MB with spiffs (1.2MB APP/1.5MB SPIFFS)` (ห้ามปล่อยว่าง เพื่อป้องกัน build.partitions.csv error)
   - USB CDC On Boot: `Enabled`
 - **Thermal & Power Management**:
   - กำหนดความถี่ CPU เป็น **80 MHz** (`setCpuFrequencyMhz(80)`) เพื่อลดความร้อนบนบอร์ด Super Mini
-  - Wi-Fi ต้องจำกัดกำลังส่งที่ **8.5 dBm** (`WiFi.setTxPower(WIFI_POWER_8_5dBm)`) และมีระบบ Auto-Sleep / Button Toggle เพื่อดับ Wi-Fi ขณะขับขี่
+  - ใช้ **BLE 5.0 Web Bluetooth** แทน Wi-Fi และจำกัดกำลังส่งที่ **0 dBm** (`BLEDevice::setPower(ESP_PWR_LVL_N0)`) เพื่อประหยัดพลังงานและลดความร้อนขณะขับขี่
