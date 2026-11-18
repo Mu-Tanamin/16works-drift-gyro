@@ -73,6 +73,6 @@
 ## ❄️ ระบบจัดการความร้อน พลังงาน และความปลอดภัย
 
 1. **CPU Frequency Scaling (80 MHz)**: ลดความเร็วคล็อก CPU เหลือ 80MHz ลดการกินไฟและความร้อนบนบอร์ด Super Mini
-2. **Ultra-Low-Power BLE 5.0 (0 dBm)**: ใช้ BLE กำลังส่ง 0 dBm (`ESP_PWR_LVL_N0`) แทน Wi-Fi เย็นเฉียบตลอดการขับขี่
+2. **BLE 5.0 (+3 dBm)**: ใช้ BLE กำลังส่ง +3 dBm (`ESP_PWR_LVL_P3`) แทน Wi-Fi เสถียรในสนามและยังคงความร้อนต่ำตลอดการขับขี่
 3. **I2C Fault Pass-Through**: หากสาย MPU6050 หลุดหรือบัส I2C มีปัญหา (`timeout 3ms`) ระบบจะตัดไจโรเป็น 0 และส่งพวงมาลัยคนขับตรงไปที่เซอร์โวทันที พร้อมกะพริบไฟ LED เตือน
 4. **Arduino IDE Build Requirements**: ใช้ **ESP32 Arduino Core 3.x** ขึ้นไป, Board: `ESP32C3 Dev Module`, Partition Scheme: `Default 4MB with spiffs (1.2MB APP/1.5MB SPIFFS)`, USB CDC On Boot: `Enabled`

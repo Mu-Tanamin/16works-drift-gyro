@@ -596,7 +596,8 @@ void setupBLE() {
   snprintf(ble_name, sizeof(ble_name), "16WORKs-GYRO-%04X", (uint16_t)(ESP.getEfuseMac() >> 32));
   BLEDevice::init(ble_name);
   BLEDevice::setMTU(517);
-  BLEDevice::setPower(ESP_PWR_LVL_N0); // 0 dBm ประหยัดพลังงานสูงสุด เย็นเฉียบตลอดการขับขี่
+  BLEDevice::setPower(ESP_PWR_LVL_P3, ESP_BLE_PWR_TYPE_DEFAULT); // +3 dBm เพิ่มเสถียรภาพสัญญาณในสนาม
+  BLEDevice::setPower(ESP_PWR_LVL_P3, ESP_BLE_PWR_TYPE_ADV);
 
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new GyroServerCallbacks());
@@ -620,11 +621,11 @@ void setupBLE() {
   BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(BLE_SERVICE_UUID);
   pAdvertising->setScanResponse(true);
-  pAdvertising->setMinPreferred(0x06);
-  pAdvertising->setMaxPreferred(0x12);
+  pAdvertising->setMinPreferred(0x0C); // 15 ms (เหมาะกับ iOS/Android ลดอาการหลุดในสนาม)
+  pAdvertising->setMaxPreferred(0x18); // 30 ms
   BLEDevice::startAdvertising();
 
-  Serial.printf("[BLE] Advertising Started: %s (Ultra-Low-Power Mode)\n", ble_name);
+  Serial.printf("[BLE] Advertising Started: %s (+3 dBm)\n", ble_name);
 }
 
 #ifdef SELFTEST
@@ -951,14 +952,6 @@ void loop() {
     last_control_time = micros();
   }
 
-  // ส่งข้อมูล Telemetry ผ่าน BLE Notification ทุกๆ 100ms (10Hz) เมื่อมีมือถือเชื่อมต่ออยู่
-  if (ble_connected && (millis() - last_ble_notify_ms >= 100)) {
-    last_ble_notify_ms = millis();
-    notifyBLETelemetry();
-  }
-
-  handleButton(); // จัดการปุ่มกด BOOT บนบอร์ด
-
   unsigned long now_us = micros();
   unsigned long elapsed_us = now_us - last_control_time;
   if (elapsed_us >= CONTROL_PERIOD_US) {
@@ -967,12 +960,26 @@ void loop() {
     if (dt <= 0.0f) dt = 0.004f;
     if (dt > 0.05f) dt = 0.05f;
 
+    handleButton(); // ตรวจปุ่มกด BOOT บนบอร์ดทุก 4ms (250Hz)
+
     if (currentState == NORMAL_MODE) {
       runDriftMode(dt);
     } else {
       runSetupMode();
     }
-  } else if (elapsed_us < (CONTROL_PERIOD_US - 1500)) {
-    delay(1); // คืนเวลาให้ BLE Task และลดภาระ CPU
+
+    // ส่ง BLE Telemetry หลังจบรอบควบคุม (~6.7Hz / 150ms) เพื่อลดภาระ RF และไม่ขวางลูปไจโร
+    if (ble_connected && (millis() - last_ble_notify_ms >= 150)) {
+      last_ble_notify_ms = millis();
+      notifyBLETelemetry();
+    }
+  } else {
+    unsigned long remain_us = CONTROL_PERIOD_US - elapsed_us;
+    if (remain_us > 1200) {
+      delay(1); // คืนเวลาให้ FreeRTOS / BLE Task และลดความร้อน CPU
+    } else {
+      yield();
+      delayMicroseconds(100);
+    }
   }
 }

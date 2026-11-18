@@ -43,4 +43,4 @@
   - USB CDC On Boot: `Enabled`
 - **Thermal & Power Management**:
   - กำหนดความถี่ CPU เป็น **80 MHz** (`setCpuFrequencyMhz(80)`) เพื่อลดความร้อนบนบอร์ด Super Mini
-  - ใช้ **BLE 5.0 Web Bluetooth** แทน Wi-Fi และจำกัดกำลังส่งที่ **0 dBm** (`BLEDevice::setPower(ESP_PWR_LVL_N0)`) เพื่อประหยัดพลังงานและลดความร้อนขณะขับขี่
+  - ใช้ **BLE 5.0 Web Bluetooth** แทน Wi-Fi และตั้งกำลังส่งที่ **+3 dBm** (`BLEDevice::setPower(ESP_PWR_LVL_P3)`) เพื่อเสถียรภาพการเชื่อมต่อในสนามโดยยังคงความร้อนต่ำขณะขับขี่
